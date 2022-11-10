@@ -13,7 +13,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
+
+from argparse import ArgumentParser
+import os
 
 
 def get_MNIST(batch_size):
@@ -46,7 +49,7 @@ def plot_images(images, title, saved=False):
             plt.axis('off')
             plt.imshow(np.transpose(np_images[index], (1, 2, 0)), cmap='gray')
             if saved:
-                plt.savefig(f"images/{title}.png")
+                plt.savefig(f"results/{title}.png")
             index += 1
     fig.suptitle(title, fontsize=20)
     plt.show()
@@ -73,7 +76,7 @@ class DDPM(nn.Module):
 
         alpha_prod = self.alpha_prods[t]
 
-        if type(alpha_prod) is torch.Tensor:
+        if len(alpha_prod.shape) > 0:
             alpha_prod = alpha_prod.reshape(x_0.shape[0], 1, 1, 1)
 
         # using closed form to compute x_t using x_0 and noise
@@ -221,7 +224,10 @@ class UNet(nn.Module):
         )
 
 
-def sample(model, n_samples, img_shape, device):
+def sample(model, n_samples, img_shape, device, step):
+    if not os.path.exists("results"):
+        os.mkdir("results")
+
     with torch.no_grad():
         x = torch.randn(n_samples, *img_shape).to(device)
 
@@ -243,11 +249,11 @@ def sample(model, n_samples, img_shape, device):
 
                 x = x + sigma_t * noise
 
-            if t % 100 == 0:
-                plot_images(x, f"sampled[t={t}]")
+            if t % step == 0:
+                plot_images(x, f"sampled[t={t}]", saved=True)
 
 
-def train(model, dataloader, optimizer, criterion, device, n_epochs):
+def train(model, dataloader, optimizer, criterion, device, n_epochs, model_path):
     loss_log = []
     best_loss = float("inf")
 
@@ -273,31 +279,49 @@ def train(model, dataloader, optimizer, criterion, device, n_epochs):
 
             if best_loss > epoch_loss:
                 best_loss = epoch_loss
-                torch.save(model.state_dict(), "model/ddpm.pt")
+                torch.save(model.state_dict(), model_path)
 
         loss_log.append(epoch_loss)
 
     return loss_log
 
 
-def main():
-    batch_size = 64
+def main(args):
+    batch_size = args.batch_size
     dataloader = get_MNIST(batch_size=batch_size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = DDPM(UNet().to(device), device=device)
 
-    n_epochs = 20
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    n_epochs = args.epochs
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
 
-    loss_log = train(model, dataloader, optimizer, criterion, device, n_epochs=n_epochs)
-
-    img_shape = tuple(next(iter(dataloader))[0].shape[1:])
-    sample(model, 16, img_shape, device)
+    if args.command == 'train':
+        print('Training the model...')
+        loss_log = train(model, dataloader, optimizer, criterion, device, n_epochs=n_epochs, model_path=args.path)
+        print("loss: ", loss_log)
+    elif args.command == 'sample':
+        print('Sampling...')
+        model.load_state_dict(torch.load(args.path))
+        img_shape = tuple(next(iter(dataloader))[0].shape[1:])
+        sample(model, args.samples, img_shape, device, step=args.step)
+    else:
+        print(f'Unknown command: {args.command}')
 
 
 if __name__ == "__main__":
-    main()
+    parser = ArgumentParser(description='DDPM')
+    parser.add_argument('command', help='train or sample')
+    parser.add_argument('-b', '--batch-size', type=int, help='Batch size', default=64)
+    parser.add_argument('-e', '--epochs', type=int, help='Number of epochs', default=20)
+    parser.add_argument('-lr', type=float, help='Adam learning rate', default=1e-3)
+    parser.add_argument('-n', '--samples', type=int, help='Number of samples to generate', default=16)
+    parser.add_argument('-s', '--step', type=int, help='Step of time during sampling', default=100)
+    parser.add_argument('-p', '--path', help='Path to load/save the model', default='ddpm.pt')
+
+    args = parser.parse_args()
+
+    main(args)
 
